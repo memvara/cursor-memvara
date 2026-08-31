@@ -12,6 +12,7 @@ import pathlib
 import re
 import ssl
 import subprocess
+import sys
 import unittest
 import urllib.request
 
@@ -458,6 +459,132 @@ class Version(unittest.TestCase):
             source.count(f'"{self.VERSION}"'), 1,
             f"{self.VERSION} appears more than once in this file; VERSION is meant to be "
             "the single place the suite states the release")
+
+
+def _readme_prose(root: pathlib.Path) -> str:
+    """The README with every run of whitespace collapsed to one space.
+
+    Where prose wraps is not a fact about what it says: matching raw text pins a line
+    break, so a reflow reddens a guard whose sentence is present and correct, and a
+    rewrapped reintroduction slips past `assertNotIn`.
+    """
+    return " ".join(root.joinpath("README.md").read_text(encoding="utf-8").split())
+
+
+class ModuleShape(unittest.TestCase):
+    """Nothing may be defined below `unittest.main()`.
+
+    Measured in the sibling repos: a class appended after the `__main__` block is
+    collected by `unittest discover` and NOT by `python3 test/test_plugin.py`, and both
+    print OK -- 26 tests one way and 21 the other, with nothing saying so.
+    """
+
+    def test_nothing_is_defined_after_the_main_block(self) -> None:
+        import ast
+
+        body = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8")).body
+        guards = [i for i, node in enumerate(body)
+                  if isinstance(node, ast.If) and "__main__" in ast.dump(node.test)]
+        self.assertEqual(len(guards), 1, "expected exactly one __main__ block")
+        after = [type(node).__name__ for node in body[guards[0] + 1:]]
+        self.assertEqual(
+            after, [],
+            f"{after} is defined after `unittest.main()`, so "
+            "`python3 test/test_plugin.py` runs without it and still prints OK")
+
+
+class AuthScript(unittest.TestCase):
+    """The skill carries the device-code flow. On this host that is a CHOICE, not a limit.
+
+    Codex, Copilot and OpenCode cannot ship a command at all -- their plugin formats have
+    no command component. Cursor does: a plugin discovers a `commands/` directory. What
+    stopped the commands shipping here is the piece that fails silently. A command body
+    names its plugin's directory through a placeholder, and the equivalent on Grok
+    (`${CLAUDE_PLUGIN_ROOT}`) expanded to nothing and handed the shell an absolute path to
+    a file that has never existed on any machine, with the plugin correctly on disk beside
+    it. Checking `${CURSOR_PLUGIN_ROOT}` needs a signed-in `cursor-agent`, and
+    `cursor-agent status` said `Not logged in`.
+
+    So the skill route ships -- it needs no placeholder -- and the README says why the
+    commands are absent, so their absence reads as a decision rather than an oversight.
+    """
+
+    SCRIPT = SKILL / "scripts" / "memvara_auth.py"
+    COMMANDS = ("authenticate", "login", "logout", "stats")
+
+    def test_the_skill_ships_the_auth_script(self) -> None:
+        """Positive, because the failure to catch is a deletion."""
+        self.assertTrue(
+            self.SCRIPT.is_file(),
+            f"{self.SCRIPT.relative_to(ROOT)} is missing; the README tells the user it "
+            "is there")
+
+    def test_the_script_runs_here_and_names_every_command(self) -> None:
+        """Executed rather than read, on the interpreter running this suite. A byte diff
+        against the library cannot see a broken script: a library that shipped one hands
+        every repo two copies that are equally broken and agree."""
+        done = subprocess.run(
+            [sys.executable, str(self.SCRIPT), "not-a-command"],
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        for command in self.COMMANDS:
+            self.assertIn(command, done.stdout,
+                          f"the usage this prints omits {command}")
+
+    def test_the_readme_names_the_in_repo_path_and_it_resolves(self) -> None:
+        """Only the path this checkout can actually verify.
+
+        The sibling repo learned this the expensive way: an install path was written out
+        from memory, string-matched by its own guard, and pointed at the wrong directory
+        -- and it was the fallback offered because resolution was unverified. So this
+        README states the in-repo path, which is checkable, and tells the reader to supply
+        an absolute one rather than naming a location nobody here has confirmed.
+        """
+        text = _readme_prose(ROOT)
+        quoted = "plugin/skills/memvara/scripts/memvara_auth.py"
+        self.assertIn(quoted, text, "the README never names the auth script")
+        self.assertTrue((ROOT / quoted).is_file(),
+                        f"the README says {quoted}, and nothing is there")
+        self.assertIn("no `pip install`", text)
+
+    def test_the_readme_does_not_invent_an_install_path(self) -> None:
+        """The other half of the test above, and the actual lesson from the sibling repo.
+
+        A path nobody checked is worse than no path: it looks authoritative, it is what a
+        stuck reader reaches for, and it fails with `No such file or directory` on a
+        machine where the file is sitting correctly on disk. Until someone verifies where
+        a Cursor plugin's skill lands, this README must not name one.
+        """
+        text = _readme_prose(ROOT)
+        self.assertNotIn("~/.cursor/plugins", text,
+                         "the README names a Cursor install location that nothing here "
+                         "has verified; check it on a signed-in host first")
+        self.assertIn("not written out here because it has not been checked", text,
+                      "the README should say WHY it gives no install path, or the "
+                      "omission reads as forgetfulness")
+
+    def test_the_readme_says_why_no_command_ships(self) -> None:
+        """This host CAN carry one, so silence would read as an oversight.
+
+        Positive, and it must name the placeholder: "no commands here" without the reason
+        is indistinguishable from nobody having tried.
+        """
+        text = _readme_prose(ROOT)
+        self.assertIn("No `/memvara authenticate` yet, and why", text)
+        self.assertIn("${CURSOR_PLUGIN_ROOT}", text,
+                      "the section does not name the thing that was not verified")
+        self.assertIn("Not logged in", text,
+                      "the section does not say what blocked the check, so a reader "
+                      "cannot tell a blocked measurement from a negative result")
+
+    def test_the_readme_no_longer_promises_no_python(self) -> None:
+        """It said "there is no local Python process", and now one ships. Both
+        directions, against normalised prose so a rewrapped reintroduction is caught."""
+        text = _readme_prose(ROOT)
+        self.assertNotIn("no local Python process", text,
+                         "the README still claims no Python ships, and a Python script "
+                         "is sitting in plugin/skills/memvara/scripts/")
+        self.assertIn("Nothing runs in the background", text)
 
 
 if __name__ == "__main__":
