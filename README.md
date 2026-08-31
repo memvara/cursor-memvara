@@ -6,8 +6,41 @@ how to use it.
 Add this repository as a Cursor marketplace and install `memvara`.
 
 The first connection opens a browser so you can click Allow. That grant
-lasts 90 days. There is no local Python process and we do not use an
-API key.
+lasts 90 days. Nothing runs in the background and no API key ships in the
+plugin files.
+
+## When the browser sign-in will not finish
+
+The skill carries `scripts/memvara_auth.py` — inside the skill directory,
+so it is `scripts/memvara_auth.py` under wherever this skill is installed.
+In this repository that is `plugin/skills/memvara/scripts/memvara_auth.py`.
+It is the device-code flow, standard library only, no `pip install`, and
+nothing left running when it returns. It also does `logout` and `stats`.
+
+Ask Cursor to authenticate memvara and it runs the script. If it cannot
+find it, give it the absolute path — the install location is not written
+out here because it has not been checked on this host, and a path nobody
+verified is worse than none.
+
+## No `/memvara authenticate` yet, and why
+
+Cursor is the one host in this family that **could** carry it. A Cursor
+plugin discovers a `commands/` directory. Codex and Copilot cannot: their
+plugin manifests have no command field, and Codex's own validator rejects
+one the same way it rejects a field that does not exist. OpenCode does read
+slash commands, from `~/.config/opencode/commands/`, but those are the
+user's directories and a plugin has no route into them.
+
+It is not shipped because the piece that fails silently was not measured.
+A command body names the plugin's own directory through a placeholder, and
+on Grok the equivalent (`${CLAUDE_PLUGIN_ROOT}`) expanded to nothing and
+handed the shell an absolute path to a file that has never existed on any
+machine — with the plugin sitting correctly on disk beside it. Verifying
+`${CURSOR_PLUGIN_ROOT}` needs a signed-in `cursor-agent`, and on the
+machine this was written `cursor-agent status` said `Not logged in`.
+
+So the skill route ships, which needs no placeholder, and the commands
+wait for someone who can run that check.
 
 URL: `https://app.memvara.dev/mcp`
 
