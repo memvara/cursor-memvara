@@ -556,9 +556,18 @@ class AuthScript(unittest.TestCase):
         a Cursor plugin's skill lands, this README must not name one.
         """
         text = _readme_prose(ROOT)
-        self.assertNotIn("~/.cursor/plugins", text,
-                         "the README names a Cursor install location that nothing here "
-                         "has verified; check it on a signed-in host first")
+        # The hazard is a runnable command pointing somewhere nobody checked, not one
+        # particular spelling of it. Forbidding `~/.cursor/plugins` caught the prefix
+        # already thought of and would have passed `$HOME/...`, `/Users/...` or
+        # `~/Library/Application Support/Cursor/...` -- each of which sends a stuck reader
+        # to a path that does not exist on their machine, which is the defect
+        # openclaw-memvara shipped and had to fix. This README's whole position is that it
+        # offers no runnable absolute invocation, so that is what gets asserted.
+        for absolute in ("python3 ~/", "python3 /", "python3 $HOME"):
+            self.assertNotIn(absolute, text,
+                             f"the README runs the script from {absolute!r}, an install "
+                             "location nothing here has verified; check it on a "
+                             "signed-in host before naming one")
         self.assertIn("not written out here because it has not been checked", text,
                       "the README should say WHY it gives no install path, or the "
                       "omission reads as forgetfulness")

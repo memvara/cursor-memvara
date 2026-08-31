@@ -25,8 +25,11 @@ verified is worse than none.
 ## No `/memvara authenticate` yet, and why
 
 Cursor is the one host in this family that **could** carry it. A Cursor
-plugin discovers a `commands/` directory, unlike Codex, Copilot and
-OpenCode, whose plugin formats have no command component at all.
+plugin discovers a `commands/` directory. Codex and Copilot cannot: their
+plugin manifests have no command field, and Codex's own validator rejects
+one the same way it rejects a field that does not exist. OpenCode does read
+slash commands, from `~/.config/opencode/commands/`, but those are the
+user's directories and a plugin has no route into them.
 
 It is not shipped because the piece that fails silently was not measured.
 A command body names the plugin's own directory through a placeholder, and
