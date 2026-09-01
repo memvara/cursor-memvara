@@ -347,8 +347,12 @@ class Hooks(unittest.TestCase):
                       f"hooks-sync.yml does not clear {dest} before copying")
         self.assertIn(f'cp -R "$src" {dest}\n', source,
                       f"hooks-sync.yml does not copy the library tree into {dest}")
-        self.assertIn(f"git diff --quiet -- {dest} hooks.lock", source,
-                      f"hooks-sync.yml checks a different path than {dest} for changes")
+        self.assertIn(f'if [ -z "$(git status --porcelain -- {dest})" ]; then', source,
+                      f"hooks-sync.yml decides on a different path than {dest}")
+        self.assertNotIn("git diff --quiet", source,
+                         "`git diff` cannot see a file the library ADDED -- it lands "
+                         "untracked -- so the addition is dropped and re-copied nightly "
+                         "in silence. `git status --porcelain` lists untracked entries")
 
     def _record(self):
         sys.path.insert(0, str(HOOKS))
