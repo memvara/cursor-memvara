@@ -1,0 +1,10 @@
+# The library commit whose plugin/hooks/ tree this plugin vendors.
+# CI diffs plugin/hooks against that SHA byte for byte, with no transforms at all.
+# There is no generated hooks.json here: Cursor reads its hook config from
+# ~/.cursor/hooks.json rather than from a plugin manifest -- measured, a manifest hooks
+# key did not fire -- so bin/install.py writes the entries and tools/generate.py is not
+# used for this host.
+repo=memvara/memvara
+sha=05155a35086821a2636e7e3e54b300bd093ff87f
+path=plugin/hooks
+host=cursor

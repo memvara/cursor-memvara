@@ -13,6 +13,7 @@ import re
 import ssl
 import subprocess
 import sys
+import tempfile
 import unittest
 import urllib.request
 
@@ -122,15 +123,56 @@ def _library_skill_files(sha: str) -> "set[str]":
             if entry.get("type") == "blob" and entry["path"].startswith(prefix)}
 
 
-def _lock() -> dict[str, str]:
+def _lock(name: str = "skill.lock") -> dict[str, str]:
     out: dict[str, str] = {}
-    for line in (ROOT / "skill.lock").read_text(encoding="utf-8").splitlines():
+    for line in (ROOT / name).read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         key, _, value = line.partition("=")
         out[key.strip()] = value.strip()
     return out
+
+
+def _library_files(sha: str, path: str) -> "set[str]":
+    """Every path under `path` at `sha`, relative to `path`."""
+    root = os.environ.get("MEMVARA_LIBRARY")
+    prefix = f"{path}/"
+    if root:
+        try:
+            out = subprocess.check_output(
+                ["git", "-C", root, "ls-tree", "-r", "--name-only", sha, path],
+                stderr=subprocess.DEVNULL).decode()
+        except subprocess.CalledProcessError:
+            out = None
+        if out is not None:
+            return {line[len(prefix):] for line in out.splitlines()
+                    if line.startswith(prefix)}
+    try:
+        tree = json.loads(_fetch(
+            f"https://api.github.com/repos/memvara/memvara/git/trees/{sha}?recursive=1"))
+    except Exception as exc:
+        raise LibraryUnreachable(str(exc)) from exc
+    return {entry["path"][len(prefix):] for entry in tree.get("tree", [])
+            if entry.get("type") == "blob" and entry["path"].startswith(prefix)}
+
+
+HOOKS = PLUGIN / "hooks"
+LIBRARY_HOOKS_PATH = "plugin/hooks"
+
+#: Hook scripts are executable content Cursor runs, so the allowlist names them one by
+#: one. There is no `hooks.json` here: Cursor reads its hook config from the user's own
+#: file, which `bin/install.py` writes, so nothing is generated into this tree.
+ALLOWED_HOOK_FILES = {
+    "run.py", "recall.py", "capture.py", "session_start.py", "approve.py", "daemon.py",
+    "core/__init__.py", "core/host.py", "core/envelope.py",
+    "hosts/__init__.py", "hosts/claude.py", "hosts/codex.py", "hosts/cursor.py",
+    "hosts/opencode.py",
+    "js/shim.mjs", "js/opencode.mjs",
+    "lib/__init__.py", "lib/extract.py", "lib/fast.py", "lib/hosted.py", "lib/ipc.py",
+    "lib/open.py", "lib/standing.py", "lib/transcript.py", "lib/usage.py", "lib/write.py",
+    "tools/__init__.py", "tools/generate.py",
+}
 
 
 class SkillTree(unittest.TestCase):
@@ -195,6 +237,218 @@ class SkillTree(unittest.TestCase):
             drifted, [],
             f"vendored skill is behind memvara/memvara@{head[:7]}: {drifted} — "
             "sync it")
+
+
+class Hooks(unittest.TestCase):
+    """The tree Cursor runs, vendored byte for byte with ZERO transforms."""
+
+    def _ours(self) -> "set[str]":
+        return {path.relative_to(HOOKS).as_posix() for path in HOOKS.rglob("*")
+                if path.is_file() and "__pycache__" not in path.parts}
+
+    def test_the_vendored_hook_bytes_match_the_library_at_the_pinned_sha(self) -> None:
+        lock = _lock("hooks.lock")
+        self.assertEqual(lock["repo"], "memvara/memvara")
+        self.assertEqual(lock["path"], LIBRARY_HOOKS_PATH)
+        self.assertEqual(lock["host"], "cursor")
+        sha = lock["sha"]
+        self.assertEqual(len(sha), 40, f"hooks.lock sha is not a full sha: {sha!r}")
+        ours = self._ours()
+        self.assertTrue(ours, "no vendored hook files found — this guard would pass on "
+                              "an empty tree, which is the shape it exists to stop")
+        try:
+            upstream = _library_files(sha, LIBRARY_HOOKS_PATH)
+        except LibraryUnreachable as exc:
+            raise unittest.SkipTest(
+                f"library unreachable, vendored bytes NOT checked: {exc}") from exc
+        self.assertEqual(ours, upstream,
+                         f"the vendored hook file set differs from the library@{sha[:7]}")
+        drifted = [rel for rel in sorted(ours)
+                   if (HOOKS / rel).read_bytes()
+                   != _library_bytes(sha, f"{LIBRARY_HOOKS_PATH}/{rel}")]
+        self.assertEqual(drifted, [], f"vendored hooks drifted from {sha[:7]}: {drifted}")
+
+    def test_the_vendored_hooks_are_not_behind_the_library(self) -> None:
+        try:
+            head = _library_head()
+            upstream = _library_files(head, LIBRARY_HOOKS_PATH)
+        except LibraryUnreachable as exc:
+            raise unittest.SkipTest(
+                f"library unreachable, hook drift NOT checked: {exc}") from exc
+        self.assertTrue(upstream, "the library reported an empty hook tree")
+        self.assertEqual(self._ours(), upstream,
+                         f"the vendored hook file set differs from the library at "
+                         f"{head[:7]} — re-vendor and update hooks.lock")
+
+    def test_the_hook_file_set_is_named_here_one_by_one(self) -> None:
+        extra = self._ours() - ALLOWED_HOOK_FILES
+        self.assertFalse(extra, f"unlisted hook files: {sorted(extra)}")
+
+    def test_the_allowlist_names_nothing_that_is_no_longer_in_the_tree(self) -> None:
+        missing = ALLOWED_HOOK_FILES - self._ours()
+        self.assertFalse(missing, f"allowlist names files that are gone: {sorted(missing)}")
+
+    def _record(self):
+        sys.path.insert(0, str(HOOKS))
+        try:
+            import hosts.cursor as record  # noqa: PLC0415
+            return record.HOST
+        finally:
+            sys.path.remove(str(HOOKS))
+
+    def test_this_host_ships_no_per_prompt_recall_and_says_so(self) -> None:
+        """The reduction, asserted in the record AND on the page.
+
+        `beforeSubmitPrompt` never fires on this client -- not on a first message, not on
+        a `--continue` follow-up, not from user or project scope -- so `recall` is absent
+        from `events` and `run.py` skips it with a logged reason. Absence alone is not the
+        guard: a record that quietly regained the mapping would ship a hook that installs,
+        registers and never runs, and a README that quietly stopped disclosing the gap
+        would leave a user believing memory arrives every turn when it does not. Both
+        halves are required here, which is what makes either one failing loud.
+        """
+        host = self._record()
+        self.assertNotIn(
+            "recall", host.events,
+            "the record maps `recall` to an event; beforeSubmitPrompt does not fire on "
+            "this client, so that hook would install, register and never run")
+        for name in ("session_start", "capture", "approve"):
+            self.assertIn(name, host.events, f"{name} is no longer mapped")
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("no per-prompt recall on Cursor", text,
+                      "the README does not disclose that memory is not injected per turn")
+        self.assertIn("beforeSubmitPrompt", text,
+                      "the README does not name the event that was measured, so a reader "
+                      "cannot check the finding themselves")
+
+    def test_capture_mines_with_this_host_s_own_model(self) -> None:
+        """And read-only, which is what makes the `--trust` beside it defensible.
+
+        `-p` alone has access to write and shell, and what this command is handed is a
+        mined turn -- arbitrary text, including whatever the user pasted. `--trust` is
+        required because an extraction runs wherever the turn happened and Cursor refuses
+        an untrusted directory outright, so the read-only mode is not decoration.
+        """
+        argv = self._record().extractor.argv
+        self.assertEqual(argv[0], "cursor-agent",
+                         f"the first rung is {argv[0]!r}, not this host's own CLI")
+        self.assertIn("--mode", argv)
+        self.assertEqual(argv[argv.index("--mode") + 1], "ask",
+                         "the extractor is not read-only, and it is passed --trust")
+        self.assertNotIn("--model", argv,
+                         "the extractor pins a model, overriding the one this user "
+                         "configured and possibly naming one they cannot reach")
+
+    def test_a_hook_never_fails_a_turn_whatever_the_environment(self) -> None:
+        env = dict(os.environ, HOME="/nonexistent", MEMVARA_HOME="/nonexistent",
+                   # Without this, `capture` forks and returns before the body is
+                   # imported, so the subtest would check the wrapper and not the code
+                   # that opens a store and reads a transcript.
+                   MEMVARA_HOOK_DETACHED="1")
+        for hook in ("session_start", "recall", "capture", "approve"):
+            with self.subTest(hook=hook):
+                proc = subprocess.run(
+                    [sys.executable, str(HOOKS / "run.py"), hook, "--host", "cursor"],
+                    input="{}", capture_output=True, text=True, env=env, timeout=120)
+                self.assertEqual(proc.returncode, 0,
+                                 f"{hook} exited {proc.returncode}: {proc.stderr[:300]}")
+                if proc.stdout.strip():
+                    json.loads(proc.stdout)
+
+
+class Installer(unittest.TestCase):
+    """It writes the user's own hook config, so it must never take anything else."""
+
+    def _run(self, cfg: pathlib.Path, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(ROOT / "bin" / "install.py"), "--config", str(cfg),
+             *args], capture_output=True, text=True)
+
+    def test_it_writes_the_three_events_this_host_supports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = pathlib.Path(tmp) / "hooks.json"
+            self.assertEqual(self._run(cfg).returncode, 0)
+            hooks = _json(cfg)["hooks"]
+            self.assertEqual(sorted(hooks), ["preToolUse", "sessionEnd", "sessionStart"],
+                             "the installer wrote a different event set than the record "
+                             "declares, so the two can disagree about what runs")
+            self.assertNotIn("beforeSubmitPrompt", hooks,
+                             "it registered the event that does not fire on this client")
+
+    def test_it_leaves_everything_that_is_not_ours_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = pathlib.Path(tmp) / "hooks.json"
+            cfg.write_text(json.dumps({"version": 1, "hooks": {
+                "sessionStart": [{"command": "echo theirs"}],
+                "beforeShellExecution": [{"command": "echo also theirs"}]}}),
+                encoding="utf-8")
+            self.assertEqual(self._run(cfg).returncode, 0)
+            hooks = _json(cfg)["hooks"]
+            self.assertIn("beforeShellExecution", hooks, "it dropped an unrelated event")
+            self.assertTrue(any("echo theirs" in e["command"]
+                                for e in hooks["sessionStart"]),
+                            "it dropped a foreign hook on an event it also writes")
+            self.assertEqual(len(hooks["sessionStart"]), 2)
+
+            # And running it again must replace rather than append.
+            self.assertEqual(self._run(cfg).returncode, 0)
+            self.assertEqual(len(_json(cfg)["hooks"]["sessionStart"]), 2)
+
+            # --remove takes ONLY ours.
+            self.assertEqual(self._run(cfg, "--remove").returncode, 0)
+            hooks = _json(cfg)["hooks"]
+            self.assertEqual(hooks["sessionStart"], [{"command": "echo theirs"}])
+            self.assertIn("beforeShellExecution", hooks)
+
+    def test_it_refuses_a_hook_value_it_cannot_read_rather_than_replacing_it(self) -> None:
+        """The docstring promises anything else in the file is left exactly as it was.
+
+        An earlier version reset a non-list to `[]`, which silently DELETED it: a
+        hand-written `"sessionStart": {"command": ...}` came back as our entry alone while
+        the output still said "wrote". The identical defect was found in
+        `opencode-memvara`'s installer and fixed there as an instance; this is the guard
+        that stops it being reproduced a third time.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = pathlib.Path(tmp) / "hooks.json"
+            cfg.write_text(json.dumps({"version": 1, "hooks": {
+                "sessionStart": {"command": "echo theirs"}}}), encoding="utf-8")
+            proc = self._run(cfg)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("refusing to write", proc.stderr + proc.stdout)
+            self.assertIn("theirs", cfg.read_text(encoding="utf-8"),
+                          "it refused and destroyed the value anyway")
+
+    def test_it_does_not_touch_an_event_it_never_writes(self) -> None:
+        """An empty list under someone else's event is a placeholder, not litter.
+
+        The merge loop walked every event in the file so it could tidy up, and tidying
+        somebody else's config is not this script's business: `"beforeShellExecution": []`
+        — left while a hook was disabled — was deleted because the key happened to be
+        empty, by a `pop` meant only for an event we had just emptied ourselves.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = pathlib.Path(tmp) / "hooks.json"
+            cfg.write_text(json.dumps({"version": 1, "hooks": {
+                "beforeShellExecution": [], "afterFileEdit": [{"command": "echo x"}]}}),
+                encoding="utf-8")
+            self.assertEqual(self._run(cfg).returncode, 0)
+            hooks = _json(cfg)["hooks"]
+            self.assertIn("beforeShellExecution", hooks,
+                          "it deleted an empty event this plugin never writes")
+            self.assertEqual(hooks["afterFileEdit"], [{"command": "echo x"}])
+
+    def test_it_refuses_a_config_it_cannot_parse(self) -> None:
+        """The user's file, with Cursor's own features in it. A parse failure is a reason
+        to stop, not to start again from an empty object."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = pathlib.Path(tmp) / "hooks.json"
+            cfg.write_text("{not json", encoding="utf-8")
+            proc = self._run(cfg)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("refusing to write", proc.stderr + proc.stdout)
+            self.assertEqual(cfg.read_text(encoding="utf-8"), "{not json",
+                             "it refused and overwrote the file anyway")
 
 
 class License(unittest.TestCase):
@@ -287,8 +541,10 @@ class Hygiene(unittest.TestCase):
                 continue
             self.assertNotIn("npx", path.read_text(encoding="utf-8"), path)
 
-    def test_no_hooks(self) -> None:
-        self.assertFalse((PLUGIN / "hooks").exists())
+    def test_no_app_manifest_and_no_commands(self) -> None:
+        """`hooks/` was asserted absent here and is not any more: this plugin ships it.
+        What replaced that assertion is the `Hooks` class, which is strictly stronger --
+        every file named one by one and every byte compared against the library."""
         self.assertFalse((PLUGIN / ".app.json").exists())
         self.assertFalse((PLUGIN / "commands").exists())
 
@@ -332,7 +588,10 @@ class CursorManifest(unittest.TestCase):
         for path in SKILL.rglob("*"):
             if path.is_file():
                 allowed.add(path.relative_to(PLUGIN))
-        found = {p.relative_to(PLUGIN) for p in PLUGIN.rglob("*") if p.is_file()}
+        for rel in ALLOWED_HOOK_FILES:
+            allowed.add(pathlib.Path("hooks", *rel.split("/")))
+        found = {p.relative_to(PLUGIN) for p in PLUGIN.rglob("*")
+                 if p.is_file() and "__pycache__" not in p.parts}
         self.assertFalse(found - allowed, found - allowed)
 
 
@@ -593,7 +852,16 @@ class AuthScript(unittest.TestCase):
         self.assertNotIn("no local Python process", text,
                          "the README still claims no Python ships, and a Python script "
                          "is sitting in plugin/skills/memvara/scripts/")
-        self.assertIn("Nothing runs in the background", text)
+        # This required "Nothing runs in the background", true while the only Python
+        # here was a command the user typed. The plugin now runs python3 at session start,
+        # on tool use and at session end. Requiring the positive disclosure instead means
+        # a README that quietly stops mentioning it fails as loudly as one that denies it.
+        self.assertNotIn("Nothing runs in the background", text)
+        self.assertIn("Making memory automatic", text,
+                      "the README has no section saying what this plugin runs locally")
+        self.assertIn("~/.memvara/.hooks/", text,
+                      "the README does not name where the hooks account for themselves, "
+                      "and on this host that log is the only account there is")
 
 
 if __name__ == "__main__":

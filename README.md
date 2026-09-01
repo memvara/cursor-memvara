@@ -6,8 +6,50 @@ how to use it.
 Add this repository as a Cursor marketplace and install `memvara`.
 
 The first connection opens a browser so you can click Allow. That grant
-lasts 90 days. Nothing runs in the background and no API key ships in the
-plugin files.
+lasts 90 days, and no API key ships in the plugin files.
+
+## Making memory automatic, and what Cursor cannot do
+
+Installing the plugin gives you the endpoint and the skill. To have memory
+arrive without asking, run:
+
+```
+python3 bin/install.py          # writes ~/.cursor/hooks.json
+python3 bin/install.py --remove # takes it back out
+```
+
+Cursor reads hooks from that file rather than from a plugin manifest — a
+manifest `hooks` key was measured on cursor-agent 2026.08.25 and did not
+fire, while the config file did. The installer only ever adds or removes
+its own entries and leaves everything else in the file alone.
+
+**There is no per-prompt recall on Cursor.** This is the part to read before
+you install. `beforeSubmitPrompt` is the event that would carry it, and it
+never fires on this client — not on the first message, not on a `--continue`
+follow-up, and not from user or project scope. So what you get is:
+
+| | |
+|---|---|
+| `sessionStart` | your standing memories, once, at the start of a session |
+| `preToolUse` | read-only memory tools auto-approved |
+| `sessionEnd` | the last exchange mined for anything worth keeping |
+
+Recall during a session is what the model asks for through the MCP tools,
+not something injected on every turn as it is on Claude Code. `stop` is
+declared by Cursor and never fired in any probe, which is why capture runs
+once at the end rather than once a turn.
+
+Capture mines the turn with **your own model** — `cursor-agent --mode ask`,
+read-only, with whatever you have configured. It is slower than the
+alternative: measured at 32 seconds for one extraction and once over the
+90-second budget, so expect it to fail sometimes and say so in the log.
+`claude -p` is the fallback if you have Claude Code; with neither,
+extraction logs that it could not run rather than storing nothing in
+silence.
+
+Nothing this plugin prints reaches your screen — a hook's reply has no
+operator channel on this host, measured. Its account of itself is
+`~/.memvara/.hooks/`.
 
 ## When the browser sign-in will not finish
 
