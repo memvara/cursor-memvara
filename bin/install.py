@@ -73,10 +73,22 @@ def main(argv: "list[str]") -> int:
     root = pathlib.Path(__file__).resolve().parent.parent
     ours = {} if args.remove else _entries(root)
 
-    for event in set(EVENTS.values()) | set(hooks):
-        existing = hooks.get(event)
+    for event in sorted(EVENTS.values()):
+        # OUR events only. An earlier version walked every event in the file so it could
+        # tidy up, and tidying somebody else's config is not this script's business: it
+        # deleted a user's `"beforeShellExecution": []` -- a placeholder left while a hook
+        # was disabled -- because the key happened to be empty.
+        existing = hooks.get(event, [])
         if not isinstance(existing, list):
-            existing = []
+            # Refuse rather than replace. The previous version reset a non-list to `[]`,
+            # which silently DELETED it: a hand-written `"sessionStart": {"command": ...}`
+            # came back as our entry alone while the output still said "wrote". The exact
+            # defect found in opencode-memvara's installer and fixed there; the docstring
+            # above promises anything else in the file is left exactly as it was, and this
+            # was the one path that broke that promise.
+            raise SystemExit(
+                f'refusing to write: "hooks.{event}" in {config} is not a list; '
+                "fix it by hand first")
         # Drop only our own entries, so re-running replaces rather than appends and
         # --remove cannot take somebody else's hook with it.
         kept = [e for e in existing
@@ -84,8 +96,9 @@ def main(argv: "list[str]") -> int:
         merged = kept + ours.get(event, [])
         if merged:
             hooks[event] = merged
-        else:
-            hooks.pop(event, None)
+        elif event in hooks:
+            # Only an event WE write, that WE just emptied. Never a key we did not add.
+            hooks.pop(event)
 
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")

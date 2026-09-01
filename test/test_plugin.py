@@ -400,6 +400,44 @@ class Installer(unittest.TestCase):
             self.assertEqual(hooks["sessionStart"], [{"command": "echo theirs"}])
             self.assertIn("beforeShellExecution", hooks)
 
+    def test_it_refuses_a_hook_value_it_cannot_read_rather_than_replacing_it(self) -> None:
+        """The docstring promises anything else in the file is left exactly as it was.
+
+        An earlier version reset a non-list to `[]`, which silently DELETED it: a
+        hand-written `"sessionStart": {"command": ...}` came back as our entry alone while
+        the output still said "wrote". The identical defect was found in
+        `opencode-memvara`'s installer and fixed there as an instance; this is the guard
+        that stops it being reproduced a third time.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = pathlib.Path(tmp) / "hooks.json"
+            cfg.write_text(json.dumps({"version": 1, "hooks": {
+                "sessionStart": {"command": "echo theirs"}}}), encoding="utf-8")
+            proc = self._run(cfg)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("refusing to write", proc.stderr + proc.stdout)
+            self.assertIn("theirs", cfg.read_text(encoding="utf-8"),
+                          "it refused and destroyed the value anyway")
+
+    def test_it_does_not_touch_an_event_it_never_writes(self) -> None:
+        """An empty list under someone else's event is a placeholder, not litter.
+
+        The merge loop walked every event in the file so it could tidy up, and tidying
+        somebody else's config is not this script's business: `"beforeShellExecution": []`
+        — left while a hook was disabled — was deleted because the key happened to be
+        empty, by a `pop` meant only for an event we had just emptied ourselves.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = pathlib.Path(tmp) / "hooks.json"
+            cfg.write_text(json.dumps({"version": 1, "hooks": {
+                "beforeShellExecution": [], "afterFileEdit": [{"command": "echo x"}]}}),
+                encoding="utf-8")
+            self.assertEqual(self._run(cfg).returncode, 0)
+            hooks = _json(cfg)["hooks"]
+            self.assertIn("beforeShellExecution", hooks,
+                          "it deleted an empty event this plugin never writes")
+            self.assertEqual(hooks["afterFileEdit"], [{"command": "echo x"}])
+
     def test_it_refuses_a_config_it_cannot_parse(self) -> None:
         """The user's file, with Cursor's own features in it. A parse failure is a reason
         to stop, not to start again from an empty object."""
