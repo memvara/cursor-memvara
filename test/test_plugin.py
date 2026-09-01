@@ -288,6 +288,72 @@ class Hooks(unittest.TestCase):
         missing = ALLOWED_HOOK_FILES - self._ours()
         self.assertFalse(missing, f"allowlist names files that are gone: {sorted(missing)}")
 
+    def test_the_sync_workflow_rewrites_the_lock_it_already_has(self) -> None:
+        """`hooks-sync.yml` must write back exactly the lock that is committed here.
+
+        The workflow replaces `hooks.lock` wholesale on every run. One stray character
+        between the heredoc there and the file here and the diff is never empty, so the
+        nightly job opens a pull request that changes nothing, every night, forever --
+        and the honest daily PR is what everybody then stops reading.
+
+        `host` is the half that must NOT come from the workflow. Seven repositories vendor
+        one tree and each registers a different client, so a literal host in the heredoc
+        would flatten six install surfaces into a copy of this one on the first sync. It
+        is read out of the file being replaced, and this asserts the heredoc interpolates
+        it rather than naming it.
+        """
+        source = (ROOT / ".github" / "workflows" / "hooks-sync.yml").read_text(
+            encoding="utf-8")
+        opener = "cat > hooks.lock <<LOCK\n"
+        self.assertIn(opener, source, "hooks-sync.yml no longer writes hooks.lock")
+        indent = " " * (source.index(opener) - source.rindex("\n", 0, source.index(opener))
+                        - 1)
+        body, _, rest = source.split(opener, 1)[1].partition(f"{indent}LOCK\n")
+        self.assertTrue(rest, "the hooks.lock heredoc is not terminated")
+
+        lines = []
+        for line in body.splitlines(True):
+            self.assertTrue(line.startswith(indent), f"ragged heredoc line: {line!r}")
+            lines.append(line[len(indent):])
+        written = "".join(lines)
+
+        self.assertIn("host=$host\n", written,
+                      "the heredoc must interpolate this repository's own host, not "
+                      "name one -- a literal there flattens every sibling repo into this "
+                      "one on the first sync")
+        self.assertIn('host=$(awk -F= \'/^host=/{print $2}\' hooks.lock)', source,
+                      "the host must be read back out of the lock being replaced")
+
+        lock = _lock("hooks.lock")
+        written = written.replace("$sha", lock["sha"]).replace("$host", lock["host"])
+        self.assertEqual(
+            written, (ROOT / "hooks.lock").read_text(encoding="utf-8"),
+            "hooks-sync.yml would rewrite hooks.lock differently from how it is "
+            "committed, so every scheduled run would open a PR that changes nothing")
+
+    def test_the_sync_workflow_copies_the_tree_this_repository_actually_vendors(self) -> None:
+        """The destination path is the half the heredoc cannot check.
+
+        A workflow that rewrites the lock perfectly and copies into the wrong directory
+        leaves the old tree in place and the lock claiming a sha it does not hold -- a
+        pair agreeing with each other while both are wrong, which is this project's
+        commonest defect shape. `DEST` is where the tree is on disk here, so this compares
+        the workflow against the repository rather than against a copy of itself.
+        """
+        source = (ROOT / ".github" / "workflows" / "hooks-sync.yml").read_text(
+            encoding="utf-8")
+        dest = HOOKS.relative_to(ROOT).as_posix()
+        self.assertIn(f"rm -rf {dest}\n", source,
+                      f"hooks-sync.yml does not clear {dest} before copying")
+        self.assertIn(f'cp -R "$src" {dest}\n', source,
+                      f"hooks-sync.yml does not copy the library tree into {dest}")
+        self.assertIn(f'if [ -z "$(git status --porcelain -- {dest})" ]; then', source,
+                      f"hooks-sync.yml decides on a different path than {dest}")
+        self.assertNotIn("git diff --quiet", source,
+                         "`git diff` cannot see a file the library ADDED -- it lands "
+                         "untracked -- so the addition is dropped and re-copied nightly "
+                         "in silence. `git status --porcelain` lists untracked entries")
+
     def _record(self):
         sys.path.insert(0, str(HOOKS))
         try:
