@@ -21,9 +21,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Read skill.lock
+      - name: Read skill.lock and hooks.lock
         id: lock
-        run: echo "sha=$(awk -F= '/^sha=/{print $2}' skill.lock)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "sha=$(awk -F= '/^sha=/{print $2}' skill.lock)" >> "$GITHUB_OUTPUT"
+          echo "hooks=$(awk -F= '/^sha=/{print $2}' hooks.lock)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v7
         with:
@@ -46,6 +48,14 @@ jobs:
       # One shallow ref, no token, no API. `--depth 1` because only the tip's tree is read.
       - name: Fetch the library's default branch, so the drift check cannot skip
         run: git -C _library fetch --depth 1 origin main:refs/remotes/origin/main
+
+      # The hook guards compare against hooks.lock's commit, which is not an object in
+      # the checkout pinned to skill.lock's sha -- so without this they fall through to
+      # the unauthenticated GitHub API and SKIP rather than check. Soft, because fetching
+      # a sha unreachable from any remote ref would turn an informative skip into an
+      # opaque red.
+      - name: Fetch the library commit hooks.lock pins, so the hook guards cannot skip
+        run: git -C _library fetch --depth 1 origin ${{ steps.lock.outputs.hooks }} || true
 
       - uses: actions/setup-python@v7
         with:
