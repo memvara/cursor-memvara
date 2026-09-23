@@ -2,5 +2,5 @@
 # CI diffs plugin/skills/memvara against that SHA. skill-sync.yml updates this
 # file when it opens a PR.
 repo=memvara/memvara
-sha=3d3ab84e00a08e051e08b28a35b20de7d1f1d7f2
+sha=e228fda44f32e61b00c1c2134b95c525954943f9
 path=memvara/skills/memvara
