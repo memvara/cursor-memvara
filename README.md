@@ -64,8 +64,9 @@ exact commit. Besides the logs, they keep two kinds of small file in
   is no remote. On the hosted server the hooks send it with every call, in a
   `Memvara-Project` header, so that memories are kept per repository.
 - `counts/` holds one file per session with three numbers: the memory lines
-  the hooks put in front of the model, the read-only memory tools the model
-  called, and the facts capture stored. The Claude Code plugin shows them in
+  the recall hook put into prompts, the read-only memory tools the model
+  called, and the facts capture stored. Cursor has no recall hook, so the first
+  number stays at 0 here. The Claude Code plugin shows them in
   a status line. This plugin has no status line, so here they are only a
   record. A file untouched for 14 days is removed.
 
@@ -81,9 +82,9 @@ overrides the file.
 
 The Claude Code plugin also has agentic capture, where capture searches your
 memory before it proposes changes. It runs only when `claude -p` is the first
-extractor, and here `cursor-agent` is. Capture here still reads each turn with one
-call, and each turn's `capture.log` entry includes a line saying that agentic
-capture was skipped. Setting `"agentic_capture": false` in the same file stops
+extractor, and here `cursor-agent` is. Capture here still reads the last
+exchange with one call, and each session's `capture.log` entry includes a line
+saying that agentic capture was skipped. Setting `"agentic_capture": false` in the same file stops
 that line.
 
 ## When the browser sign-in will not finish
