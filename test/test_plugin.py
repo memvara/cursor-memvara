@@ -709,7 +709,7 @@ class Version(unittest.TestCase):
     stopped guarding.
     """
 
-    VERSION = "0.2.4"
+    VERSION = "0.3.0"
     DECLARED = {
         'plugin/.cursor-plugin/plugin.json',
     }
