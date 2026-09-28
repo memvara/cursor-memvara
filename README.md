@@ -54,9 +54,12 @@ operator channel on this host, measured. Its account of itself is
 
 ### What else the hooks keep and send
 
-The hooks are copied from memvara/memvara v0.15.0, and `hooks.lock` names the
-exact commit. Besides the logs, they keep two kinds of small file in
-`~/.memvara/.hooks/`:
+The hooks are copied from memvara/memvara's main branch after v0.17.0, and
+`hooks.lock` names the exact commit. Everything they keep under `~/.memvara`
+is readable by your account only: each directory is created with mode `0700`
+and each file with `0600`, and a hook removes any group or other permission
+from a file or directory an older version left behind. Besides the logs, they
+keep two kinds of small file in `~/.memvara/.hooks/`:
 
 - `projects/` holds the git project of each directory the hooks ran in, for
   one hour. The project is the repository's `origin` remote, written as

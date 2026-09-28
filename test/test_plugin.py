@@ -189,6 +189,13 @@ ALLOWED_HOOK_FILES = {
     "lib/agentic.py", "lib/counts.py", "lib/mark.py", "lib/project.py",
     "lib/project_vectors.json", "lib/read_model.py", "lib/settings.py",
     "lib/state_file.py",
+    # Added with the 0.17.0 sync, and read before being listed. `lib/private.py` creates
+    # every directory under `~/.memvara` as 0700 and every file as 0600, and takes the
+    # group and other permissions off ones that already exist. `lib/deadline.py` holds one
+    # deadline for a whole hook process, so recall and session start stop making hosted
+    # calls before the host's time limit. `lib/toml_servers.py` reads the MCP server
+    # tables in Codex's `config.toml`, so the hooks find a local store configured there.
+    "lib/deadline.py", "lib/private.py", "lib/toml_servers.py",
     "tools/__init__.py", "tools/generate.py",
 }
 
