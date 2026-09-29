@@ -5,6 +5,6 @@
 # key did not fire -- so bin/install.py writes the entries and tools/generate.py is not
 # used for this host.
 repo=memvara/memvara
-sha=fcb98128ad4c095beb51324e61dfc52926ef6711
+sha=50ccd6bdc26d2816bcd8f5e7830c6ca9336d9a69
 path=plugin/hooks
 host=cursor
